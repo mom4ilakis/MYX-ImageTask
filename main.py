@@ -180,7 +180,7 @@ def get_gps_data(image: Image):
 
 def create_tables(db_to_init):
     with db_to_init:
-        db_to_init.create_tables([ImageDB, ImageLock])
+        db_to_init.create_tables([ImageDB])
 
 
 if __name__ == '__main__':
