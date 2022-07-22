@@ -1,7 +1,7 @@
 import shutil
 import os
 import zipfile
-from io import StringIO
+from io import BytesIO
 from pathlib import Path
 from typing import List
 
@@ -25,13 +25,15 @@ THUMBNAIL_SIZE = (256, 256)
 
 def create_thumbnail(image_path, image_name):
     thumbnail_name = image_name[:-4] + '_thumb.jpg'
-    path_to_thumbnail = image_path + thumbnail_name
+    path_to_thumbnail = image_path.split(image_name)[0] + thumbnail_name
 
     if not os.path.exists(thumbnail_name):
         with Image.open(image_path) as img:
             thumbnail = img.copy()
             thumbnail.thumbnail(THUMBNAIL_SIZE)
             thumbnail.save(path_to_thumbnail)
+            thumbnail.close()
+            img.close()
 
     return path_to_thumbnail, thumbnail_name
 
@@ -56,18 +58,18 @@ def create_image_record(original_timestamp, filename, file_dir, img):
 
 @app.delete("/images/{image_signature}")
 async def delete_image(image_signature: str, response: Response):
-    record = ImageModel.select().where(ImageModel.file_signature == image_signature).get()
+    record = ImageModel.select().where(ImageModel.original_timestamp == image_signature).get()
 
     if record is None:
         response.status_code = status.HTTP_200_OK
         return {"message": f"File {image_signature} deleted!"}
 
-    path = os.path.join(IMAGES_FOLDER, record.file_signature)
+    path = os.path.join(IMAGES_FOLDER, record.original_timestamp)
 
     try:
         shutil.rmtree(path)
         response.status_code = status.HTTP_200_OK
-        return {"message": f"File {record.file_signature} deleted!"}
+        return {"message": f"File {record.original_timestamp} deleted!"}
     except Exception:
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
         return {"message": f"Failed to delete file: {record.file_signature}"}
@@ -76,7 +78,7 @@ async def delete_image(image_signature: str, response: Response):
 
 
 @app.post("/images")
-async def add_image(files: List[UploadFile], response: Response):
+async def post_image(files: List[UploadFile], response: Response):
     signatures = []
     for file in files:
         try:
@@ -96,7 +98,8 @@ async def add_image(files: List[UploadFile], response: Response):
 
                     Path(file_dir).mkdir(parents=True, exist_ok=True)
 
-                    img.save(os.path.join(file_dir, file.filename),)
+                    img.save(os.path.join(file_dir, file.filename))
+                    img.close()
 
         except Exception as e:
             response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -108,7 +111,7 @@ async def add_image(files: List[UploadFile], response: Response):
 
 @app.get("/images/{image_signature}")
 async def get_image(image_signature: str, response: Response, is_thumbnail: str | None = None):
-    record = ImageModel.select().where(ImageModel.file_signature == image_signature).get()
+    record = ImageModel.select().where(ImageModel.original_timestamp == image_signature).get()
 
     if record is None:
         response.status_code = status.HTTP_404_NOT_FOUND
@@ -116,7 +119,7 @@ async def get_image(image_signature: str, response: Response, is_thumbnail: str 
         return {"message": f"Image with signature: {image_signature} not found!"}
 
     image_name = record.filename
-    image_path = os.path.join(IMAGES_FOLDER, record.file_signature, image_name)
+    image_path = os.path.join(IMAGES_FOLDER, record.original_timestamp, image_name)
 
     if os.path.exists(image_path) and os.path.isfile(image_path):
         response.status_code = status.HTTP_200_OK
@@ -128,15 +131,19 @@ async def get_image(image_signature: str, response: Response, is_thumbnail: str 
 
 
 @app.get("/images")
-async def get_geo_images(min_lat: tuple | None = None,
-                         min_lon: tuple | None = None,
-                         max_lat: tuple | None = None,
-                         max_lon: tuple | None = None,
+async def get_geo_images(min_lat: str = '',
+                         min_lon: str = '',
+                         max_lat: str = '',
+                         max_lon: str = '',
                          lat_ref: str = '',
                          lon_ref: str = ''):
+    min_lat = convert_from_str(min_lat)
+    min_lon = convert_from_str(min_lon)
+    max_lat = convert_from_str(max_lat)
+    max_lon = convert_from_str(max_lon)
 
     images = ImageModel.select().where(
-        ImageModel.lon_ref == lat_ref,
+        ImageModel.lon_ref == lon_ref,
         ImageModel.lat_ref == lat_ref,
 
         ImageModel.lat_degrees >= min_lat[0],
@@ -157,17 +164,28 @@ async def get_geo_images(min_lat: tuple | None = None,
     )
 
     zip_subdir = "images_archive"
-    zip_filename = f"{zip_subdir}.zip"
-    buffer = StringIO.StringIO()
+    buffer = BytesIO()
 
     with zipfile.ZipFile(buffer, "w") as zf:
         for image in images:
-            zip_path = os.path.join(zip_subdir. image.filename)
+            zip_path = os.path.join(zip_subdir, image.filename)
             filepath = os.path.join(image.file_dir, image.filename)
 
             zf.write(filepath, zip_path)
+        zf.close()
 
     return Response(buffer.getvalue(), media_type="application/x-zip-compressed")
+
+
+def convert_from_str(str_tuple):
+    res = []
+    for i, num in enumerate(str_tuple.split('-')):
+        if i == 2:
+           res.append(float(num))
+        else:
+            res.append(int(num))
+
+    return tuple(res)
 
 
 def get_exif_data(image: Image):
