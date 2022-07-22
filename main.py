@@ -14,13 +14,12 @@ from fastapi.responses import FileResponse
 
 import peewee
 
-from image_model import Image as ImageDB
+from image_model import Image as ImageModel
 
 app = FastAPI()
 
-db = peewee.SqliteDatabase('images.db')
 
-IMAGES_FOLDER = "/images/"
+IMAGES_FOLDER = "images"
 THUMBNAIL_SIZE = (256, 256)
 
 
@@ -40,28 +39,24 @@ def create_thumbnail(image_path, image_name):
 def create_image_record(original_timestamp, filename, file_dir, img):
     gps_data = get_gps_data(img)
 
-    record = ImageDB.create(original_timestamp=original_timestamp)
-
-    record.file_dir = file_dir
-    record.filename = filename
-
-    record.lat_degrees = gps_data['GPSLatitude'][0]
-    record.lat_minutes = gps_data['GPSLatitude'][1]
-    record.lat_seconds = gps_data['GPSLatitude'][2]
-
-    record.lon_degrees = gps_data['GPSLongitude'][0]
-    record.lon_minutes = gps_data['GPSLongitude'][1]
-    record.lon_seconds = gps_data['GPSLongitude'][2]
-
-    record.lat_ref = gps_data['GPSLatitudeRef']
-    record.long_ref = gps_data['GPSLongitudeRef']
-
-    record.save()
+    ImageModel.create(
+        original_timestamp=original_timestamp,
+        filename=filename,
+        file_dir=file_dir,
+        lat_degrees=gps_data['GPSLatitude'][0],
+        lat_minutes=gps_data['GPSLatitude'][1],
+        lat_seconds=gps_data['GPSLatitude'][2],
+        lon_degrees=gps_data['GPSLongitude'][0],
+        lon_minutes=gps_data['GPSLongitude'][1],
+        lon_seconds=gps_data['GPSLongitude'][2],
+        lat_ref=gps_data['GPSLatitudeRef'],
+        lon_ref=gps_data['GPSLongitudeRef'],
+    )
 
 
 @app.delete("/images/{image_signature}")
 async def delete_image(image_signature: str, response: Response):
-    record = ImageDB.select().where(ImageDB.file_signature == image_signature).get()
+    record = ImageModel.select().where(ImageModel.file_signature == image_signature).get()
 
     if record is None:
         response.status_code = status.HTTP_200_OK
@@ -82,33 +77,38 @@ async def delete_image(image_signature: str, response: Response):
 
 @app.post("/images")
 async def add_image(files: List[UploadFile], response: Response):
+    signatures = []
     for file in files:
         try:
             with Image.open(file.file) as img:
                 exif_data = get_exif_data(img)
-                original_timestamp = exif_data.get("DateTime")
-                record = ImageDB.select().where(ImageDB.original_timestamp == original_timestamp).get
+                original_timestamp = exif_data.get("DateTime").replace(" ", "-").replace(":", "-")
+                signatures.append(original_timestamp)
+                try:
+                    record = ImageModel.get(ImageModel.original_timestamp == original_timestamp)
+                except peewee.DoesNotExist:
+                    record = None
 
                 if record is None:
-                    file_dir = os.path.join(IMAGES_FOLDER + original_timestamp)
+                    file_dir = os.path.join(IMAGES_FOLDER, original_timestamp)
 
                     create_image_record(original_timestamp, file.filename, file_dir, img)
 
                     Path(file_dir).mkdir(parents=True, exist_ok=True)
 
-                    img.save(os.path.join(file_dir, file.filename))
+                    img.save(os.path.join(file_dir, file.filename),)
 
         except Exception as e:
             response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-            return {"message": e.message}
+            return {"message": e}
 
     response.status_code = status.HTTP_201_CREATED
-    return {"message": "Files successfully uploaded"}
+    return {"message": "Files successfully uploaded", "signatures": signatures}
 
 
 @app.get("/images/{image_signature}")
 async def get_image(image_signature: str, response: Response, is_thumbnail: str | None = None):
-    record = ImageDB.select().where(ImageDB.file_signature == image_signature).get()
+    record = ImageModel.select().where(ImageModel.file_signature == image_signature).get()
 
     if record is None:
         response.status_code = status.HTTP_404_NOT_FOUND
@@ -135,25 +135,25 @@ async def get_geo_images(min_lat: tuple | None = None,
                          lat_ref: str = '',
                          lon_ref: str = ''):
 
-    images = ImageDB.select().where(
-        ImageDB.lon_ref == lat_ref,
-        ImageDB.lat_ref == lat_ref,
+    images = ImageModel.select().where(
+        ImageModel.lon_ref == lat_ref,
+        ImageModel.lat_ref == lat_ref,
 
-        ImageDB.lat_degrees >= min_lat[0],
-        ImageDB.lat_minutes >= min_lat[1],
-        ImageDB.lat_seconds >= min_lat[2],
+        ImageModel.lat_degrees >= min_lat[0],
+        ImageModel.lat_minutes >= min_lat[1],
+        ImageModel.lat_seconds >= min_lat[2],
 
-        ImageDB.lat_degrees <= max_lat[0],
-        ImageDB.lat_minutes <= max_lat[1],
-        ImageDB.lat_seconds <= max_lat[2],
+        ImageModel.lat_degrees <= max_lat[0],
+        ImageModel.lat_minutes <= max_lat[1],
+        ImageModel.lat_seconds <= max_lat[2],
 
-        ImageDB.lon_degrees >= min_lon[0],
-        ImageDB.lon_minutes >= min_lon[1],
-        ImageDB.lon_seconds >= min_lon[2],
+        ImageModel.lon_degrees >= min_lon[0],
+        ImageModel.lon_minutes >= min_lon[1],
+        ImageModel.lon_seconds >= min_lon[2],
 
-        ImageDB.lon_degrees <= max_lon[0],
-        ImageDB.lon_minutes <= max_lon[1],
-        ImageDB.lon_seconds <= max_lon[2]
+        ImageModel.lon_degrees <= max_lon[0],
+        ImageModel.lon_minutes <= max_lon[1],
+        ImageModel.lon_seconds <= max_lon[2]
     )
 
     zip_subdir = "images_archive"
@@ -180,10 +180,17 @@ def get_gps_data(image: Image):
 
 def create_tables(db_to_init):
     with db_to_init:
-        db_to_init.create_tables([ImageDB])
+        db_to_init.create_tables([ImageModel])
+
+
+def drop_tables(db_to_uniti):
+    with db_to_uniti:
+        db_to_uniti.drop_tables([ImageModel])
 
 
 if __name__ == '__main__':
+    db = peewee.SqliteDatabase('images.db')
+
     create_tables(db)
 
     uvicorn.run(app, host='0.0.0.0', port=8080)
